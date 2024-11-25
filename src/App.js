@@ -29,11 +29,15 @@ function App() {
   const recorder = useRef(null)
   const transcriptEmitterRef = useRef(new EventEmitter());
   const [isRecording, setIsRecording] = useState(false)
-  const [transcript, setTranscript] = useState('')
+  const [respondedTranscript, setRespondedTranscript] = useState('')
+  const [currentTranscript, setCurrentTranscript] = useState('')
   const twitchWsRef = useRef(null);
   const [twitchMessages, setTwitchMessages] = useState([]);
   const [isConnecting, setIsConnecting] = useState(false);
   let websocketSessionID;
+
+  const MAX_RESPONDED_TRANSCRIPT_LENGTH = 750; // Set a maximum length for respondedTranscript
+  const MAX_TWITCH_MESSAGES = 15; // Set a maximum number of Twitch chat messages to keep
 
   const generateOpenAIResponse = async (updatedTranscript, chatHistory) => {
     try {
@@ -52,7 +56,7 @@ function App() {
             - Avoid repetition, vary responses and emotes
             - Occasionally use light roasts
             - When streamer asks a question, answer it directly
-            - Use a variety of Twitch emotes (e.g., PogChamp, Kappa, LUL, monkaS)
+            - Use a variety of Twitch emotes (e.g., PogChamp, Kappa, LUL, monkaS, Kreygasm, notlikethis, etc.)
             - Incorporate current Twitch trends and memes when appropriate
             - React to the overall mood of the stream (hype, chill, etc.)
             - Occasionally encourage chat interaction or engagement
@@ -64,12 +68,14 @@ function App() {
               - "Oof, chat's going wild! monkaS or PogChamp?"
               - "Sup @anjovypizza, that last move got me shook!" `
           },
+          { role: "user", content: `Previously responded transcript: "${respondedTranscript}"` },
           { role: "user", content: `Updated transcript from streamer: "${updatedTranscript}"` },
           { role: "user", content: `Recent chat messages: ${JSON.stringify(chatHistory)}` },
           { role: "user", content: "Based on this information, generate a unique response." }
         ],
         max_tokens: 150
       });
+      console.log('Responded transcript:', respondedTranscript);
       console.log('Updated transcript:', updatedTranscript);
       console.log('chatHistory:', chatHistory);
       console.log('OpenAI response:', response);
@@ -127,7 +133,7 @@ function App() {
 
         if (/[.!?]$/.test(transcript.text.trim())) {
           const latestSentence = transcript.text.trim();
-          setTranscript(latestSentence);
+          setCurrentTranscript(latestSentence);
           transcriptEmitterRef.current.emit('transcriptUpdated', latestSentence);
         }
       });
@@ -200,13 +206,20 @@ function App() {
       console.log('AI response:', aiResponse);
       if (aiResponse) {
         sendChatMessage(aiResponse);
+        setRespondedTranscript(prev => {
+          const newTranscript = `${prev} ${updatedTranscript}`.trim();
+          return newTranscript.length > MAX_RESPONDED_TRANSCRIPT_LENGTH
+            ? newTranscript.slice(-MAX_RESPONDED_TRANSCRIPT_LENGTH)
+            : newTranscript;
+        });
+        setCurrentTranscript('');
       }
     });
 
     return () => {
       emitter.removeAllListeners('transcriptUpdated');
     };
-  }, [twitchMessages]);
+  }, [twitchMessages, respondedTranscript]);
 
   function startWebSocketClient() {
     let websocketClient = new WebSocket(EVENTSUB_WEBSOCKET_URL);
@@ -269,10 +282,13 @@ function App() {
         if (data.metadata.subscription_type === 'channel.chat.message') {
           console.log(`MSG #${data.payload.event.broadcaster_user_login} <${data.payload.event.chatter_user_login}> ${data.payload.event.message.text}`);
 
-          setTwitchMessages(prev => [...prev, {
-            username: data.payload.event.chatter_user_login,
-            message: data.payload.event.message.text
-          }]);
+          setTwitchMessages(prev => {
+            const newMessages = [...prev, {
+              username: data.payload.event.chatter_user_login,
+              message: data.payload.event.message.text
+            }];
+            return newMessages.slice(-MAX_TWITCH_MESSAGES);
+          });
 
           if (data.payload.event.message.text.trim() === "HeyGuys") {
             sendChatMessage("VoHiYo");
@@ -311,8 +327,8 @@ function App() {
   return (
     <div className="App">
       <header>
-        <h1 className="header__title">CHILLIPINO_AI</h1>
-        <p className="header__sub-title">I am the goat </p>
+        <h1 className="header__title">LoyalViewerAI</h1>
+        <p className="header__sub-title">A Twitch chatbot that recognizes the streamer's voice and responds to the chat.</p>
       </header>
       <div className="real-time-interface">
         <p id="real-time-title" className="real-time-interface__title">Click start to begin recording!</p>
@@ -328,6 +344,18 @@ function App() {
           </button>
         )}
       </div>
+      
+      <div className="real-time-interface__message">
+        <h3>Streamer's Transcript</h3>
+        <div>
+          <h4>Responded Transcript:</h4>
+          {respondedTranscript}
+        </div>
+        <div>
+          <h4>Current Transcript:</h4>
+          {currentTranscript}
+        </div>
+      </div>
       <div className="twitch-chat">
         <h3>Twitch Chat</h3>
         <div className="chat-messages">
@@ -338,9 +366,6 @@ function App() {
             </div>
           ))}
         </div>
-      </div>
-      <div className="real-time-interface__message">
-        {transcript}
       </div>
     </div>
   );
