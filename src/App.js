@@ -1,13 +1,15 @@
 import './App.css';
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import { RealtimeTranscriber } from 'assemblyai/streaming';
 import * as RecordRTC from 'recordrtc';
+import { EventEmitter } from 'events';
 
 function App() {
   /** @type {React.MutableRefObject<RealtimeTranscriber>} */
   const realtimeTranscriber = useRef(null)
   /** @type {React.MutableRefObject<RecordRTC>} */
   const recorder = useRef(null)
+  const sentenceEmitterRef = useRef(new EventEmitter());
   const [isRecording, setIsRecording] = useState(false)
   const [transcript, setTranscript] = useState('')
 
@@ -30,17 +32,28 @@ function App() {
 
     const texts = {};
     realtimeTranscriber.current.on('transcript', transcript => {
-      let msg = '';
-      texts[transcript.audio_start] = transcript.text;
-      const keys = Object.keys(texts);
-      keys.sort((a, b) => a - b);
-      for (const key of keys) {
-        if (texts[key]) {
-          msg += ` ${texts[key]}`
-          console.log(msg)
-        }
+      if (transcript.message_type === 'PartialMessage') {
+        return;
       }
-      setTranscript(msg)
+
+      if (/[.!?]$/.test(transcript.text.trim())) {
+        let msg = '';
+        texts[transcript.audio_start] = transcript.text.trim();
+        const keys = Object.keys(texts);
+        keys.sort((a, b) => a - b);
+        for (const key of keys) {
+          if (texts[key]) {
+            msg += (msg ? ' ' : '') + texts[key]
+          }
+        }
+        setTranscript(msg);
+        
+        sentenceEmitterRef.current.emit('newSentence', {
+          sentence: transcript.text.trim(),
+          timestamp: transcript.audio_start,
+          fullTranscript: msg
+        });
+      }
     });
 
     realtimeTranscriber.current.on('error', event => {
@@ -91,6 +104,16 @@ function App() {
     recorder.current = null;
   }
 
+  useEffect(() => {
+    const emitter = sentenceEmitterRef.current;
+    emitter.on('newSentence', (data) => {
+      console.log('New sentence:', data.sentence);
+    });
+
+    return () => {
+      emitter.removeAllListeners('newSentence');
+    };
+  }, []);
 
   return (
     <div className="App">
