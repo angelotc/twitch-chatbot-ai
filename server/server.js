@@ -1,20 +1,14 @@
 const express = require('express');
 const cors = require('cors');
-const { AssemblyAI } = require('assemblyai');
 require('dotenv').config();
 
-const aaiClient = new AssemblyAI({ apiKey: process.env.ASSEMBLYAI_API_KEY });
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-app.get('/token', async (req, res) => {
-  try {
-    const token = await aaiClient.realtime.createTemporaryToken({ expires_in: 3600 });
-    res.json({ token });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+// We'll keep a basic health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok' });
 });
 
 app.set('port', 8000);

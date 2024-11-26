@@ -1,7 +1,5 @@
 import './App.css';
-import { useRef, useState, useEffect } from 'react';
-import { RealtimeTranscriber } from 'assemblyai/streaming';
-import * as RecordRTC from 'recordrtc';
+import { useRef, useState, useEffect, useCallback } from 'react';
 import { EventEmitter } from 'events';
 import OpenAI from 'openai';
 
@@ -23,10 +21,6 @@ const openai = new OpenAI({
 });
 
 function App() {
-  /** @type {React.MutableRefObject<RealtimeTranscriber>} */
-  const realtimeTranscriber = useRef(null)
-  /** @type {React.MutableRefObject<RecordRTC>} */
-  const recorder = useRef(null)
   const transcriptEmitterRef = useRef(new EventEmitter());
   const [isRecording, setIsRecording] = useState(false)
   const [respondedTranscript, setRespondedTranscript] = useState('')
@@ -39,7 +33,7 @@ function App() {
   const MAX_RESPONDED_TRANSCRIPT_LENGTH = 750; // Set a maximum length for respondedTranscript
   const MAX_TWITCH_MESSAGES = 15; // Set a maximum number of Twitch chat messages to keep
 
-  const generateOpenAIResponse = async (updatedTranscript, chatHistory) => {
+  const generateOpenAIResponse = useCallback(async (updatedTranscript, chatHistory) => {
     try {
       const response = await openai.chat.completions.create({
         model: "gpt-3.5-turbo",
@@ -53,7 +47,7 @@ function App() {
             - Grammar doesn't have to be correct
             - Converse with chat and respond to the streamer
             - Prioritize latest chat messages and streamer's latest sentences
-            - Avoid repetition, vary responses and emotes
+            - Avoid repetition, vary responses between responses and emotes. Keep in mind previous responses when generating new ones.
             - Occasionally use light roasts
             - When streamer asks a question, answer it directly
             - Use a variety of Twitch emotes (e.g., PogChamp, Kappa, LUL, monkaS, Kreygasm, notlikethis, etc.)
@@ -85,9 +79,9 @@ function App() {
       console.error('Error generating OpenAI response:', error);
       return '';
     }
-  };
+  }, [respondedTranscript]);
 
-  async function getAuth() {
+  async function getTwitchAuth() {
     // https://dev.twitch.tv/docs/authentication/validate-tokens/#how-to-validate-a-token
     let response = await fetch('https://id.twitch.tv/oauth2/validate', {
       method: 'GET',
@@ -105,96 +99,93 @@ function App() {
   
     console.log("Validated token.");
   }
-  const getToken = async () => {
-    const response = await fetch('http://localhost:8000/token');
-    const data = await response.json();
 
-    if (data.error) {
-      alert(data.error)
-    }
-
-    return data.token;
-  };
+  const recognition = useRef(null);
 
   const startTranscription = async () => {
     setIsConnecting(true);
     try {
-      getAuth();
+      // Initialize Twitch
+      await getTwitchAuth();
       twitchWsRef.current = startWebSocketClient();
-      realtimeTranscriber.current = new RealtimeTranscriber({
-        token: await getToken(),
-        sampleRate: 16_000,
-      });
 
-      realtimeTranscriber.current.on('transcript', transcript => {
-        if (transcript.message_type === 'PartialMessage') {
-          return;
+      // Check browser support for Web Speech API
+      if (!('webkitSpeechRecognition' in window)) {
+        throw new Error('Web Speech API is not supported in this browser');
+      }
+
+      // Initialize speech recognition
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      recognition.current = new SpeechRecognition();
+
+      // Configure recognition settings
+      recognition.current.continuous = true;
+      recognition.current.interimResults = true;
+      recognition.current.lang = 'en-US';
+
+      // Handle results
+      recognition.current.onresult = (event) => {
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          const isFinal = event.results[i].isFinal;
+          // Only emit completed sentences
+          if (isFinal ) {
+            console.log("Transcript:", transcript);
+            const latestSentence = transcript.trim();
+            setCurrentTranscript(latestSentence);
+            transcriptEmitterRef.current.emit('transcriptUpdated', latestSentence);
+          }
         }
+      };
 
-        if (/[.!?]$/.test(transcript.text.trim())) {
-          const latestSentence = transcript.text.trim();
-          setCurrentTranscript(latestSentence);
-          transcriptEmitterRef.current.emit('transcriptUpdated', latestSentence);
+      // Handle errors
+      recognition.current.onerror = (event) => {
+        console.error('Speech recognition error:', event);
+        if (event.error === 'not-allowed') {
+          setIsRecording(false);
         }
-      });
+      };
 
-      realtimeTranscriber.current.on('error', event => {
-        console.error(event);
-        realtimeTranscriber.current.close();
-        realtimeTranscriber.current = null;
-      });
+      // Auto-restart recognition if it ends while still recording
+      recognition.current.onend = () => {
+        if (isRecording) {
+          console.log("Speech recognition ended. Attempting to restart...");
+          recognition.current.start();
+        }
+      };
 
-      realtimeTranscriber.current.on('close', (code, reason) => {
-        console.log(`Connection closed: ${code} ${reason}`);
-        realtimeTranscriber.current = null;
-      });
+      // Start recognition
+      recognition.current.start();
+      setIsRecording(true);
 
-      await realtimeTranscriber.current.connect();
-
-      navigator.mediaDevices.getUserMedia({ audio: true })
-        .then((stream) => {
-          recorder.current = new RecordRTC(stream, {
-            type: 'audio',
-            mimeType: 'audio/webm;codecs=pcm',
-            recorderType: RecordRTC.StereoAudioRecorder,
-            timeSlice: 250,
-            desiredSampRate: 16000,
-            numberOfAudioChannels: 1,
-            bufferSize: 4096,
-            audioBitsPerSecond: 128000,
-            ondataavailable: async (blob) => {
-              if (!realtimeTranscriber.current) return;
-              const buffer = await blob.arrayBuffer();
-              realtimeTranscriber.current.sendAudio(buffer);
-            },
-          });
-          recorder.current.startRecording();
-        })
-        .catch((err) => console.error(err));
-
-      setIsRecording(true)
     } catch (error) {
       console.error('Error starting transcription:', error);
+      setIsRecording(false);
     } finally {
       setIsConnecting(false);
     }
-  }
+  };
 
   const endTranscription = async (event) => {
-    event.preventDefault();
-    setIsRecording(false)
+    if (event) {
+      event.preventDefault();
+    }
+    
+    // Stop recording
+    setIsRecording(false);
 
     // Close Twitch connection
     if (twitchWsRef.current) {
       twitchWsRef.current.close();
       twitchWsRef.current = null;
     }
-    await realtimeTranscriber.current.close();
-    realtimeTranscriber.current = null;
 
-    recorder.current.pauseRecording();
-    recorder.current = null;
-  }
+    // Stop speech recognition
+    if (recognition.current) {
+      recognition.current.stop();
+      recognition.current = null;
+    }
+  };
 
   useEffect(() => {
     const emitter = transcriptEmitterRef.current;
@@ -219,7 +210,7 @@ function App() {
     return () => {
       emitter.removeAllListeners('transcriptUpdated');
     };
-  }, [twitchMessages, respondedTranscript]);
+  }, [twitchMessages, generateOpenAIResponse]);
 
   function startWebSocketClient() {
     let websocketClient = new WebSocket(EVENTSUB_WEBSOCKET_URL);
@@ -237,6 +228,7 @@ function App() {
 
     return websocketClient;
   }
+
   async function registerEventSubListeners() {
     console.log("Registering EventSub listeners with session ID:", websocketSessionID);
     try {
@@ -271,6 +263,7 @@ function App() {
       console.error("Error registering EventSub listener:", error);
     }
   }
+
   function handleWebSocketMessage(data) {
     switch (data.metadata?.message_type) {
       case 'session_welcome':
@@ -327,7 +320,7 @@ function App() {
   return (
     <div className="App">
       <header>
-        <h1 className="header__title">LoyalViewerAI</h1>
+        <h1 className="header__title">  ViewerAI</h1>
         <p className="header__sub-title">A Twitch chatbot that recognizes the streamer's voice and responds to the chat.</p>
       </header>
       <div className="real-time-interface">
