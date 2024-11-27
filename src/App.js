@@ -1,12 +1,12 @@
 import './App.css';
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { RealtimeTranscriber } from 'assemblyai/streaming';
 import * as RecordRTC from 'recordrtc';
 import { EventEmitter } from 'events';
 import OpenAI from 'openai';
 import { personas } from './config/personas';
 import Navbar from './components/Navbar';
-import { loadSettings } from './config/chatSettings';
+import { loadSettings, saveSettings } from './config/chatSettings';
 import Settings from './components/Settings'; // Import Settings component
 
 // Twitch Configuration - Move these to environment variables later
@@ -43,18 +43,28 @@ function App() {
 
   const generateOpenAIResponse = async (updatedTranscript, chatHistory) => {
     const persona = personas[settings.bot.persona];
-    console.log('persona:', persona);
+    const attitudeModifier = settings.bot.attitude || 50;
+    console.log('Attitude modifier:', attitudeModifier);
+    console.log('Custom prompt:', settings.bot.customPrompt || persona.systemPrompt);
+    const recentMessages = chatHistory.slice(-3); // Last 3 messages for context
+
     try {
       const response = await openai.chat.completions.create({
         model: "gpt-3.5-turbo",
         messages: [
           { 
             role: "system", 
-            content: settings.bot.customPrompt || persona.systemPrompt
+            content: `${settings.bot.customPrompt || persona.systemPrompt}
+                     Your responses should be ${attitudeModifier < 50 ? 'more focused and on-topic' : 'more random and playful'}.
+                     Randomness level: ${attitudeModifier}/100`
           },
-          { role: "user", content: `Previously responded transcript: "${respondedTranscript}"` },
+          // Add recent context
+          ...recentMessages.map(msg => ({
+            role: "assistant",
+            content: msg.message
+          })),
+          { role: "user", content: `Previous streamer  transcript that has been responded to: "${respondedTranscript}"` },
           { role: "user", content: `Updated transcript from streamer: "${updatedTranscript}"` },
-          { role: "user", content: `Recent chat messages: ${JSON.stringify(chatHistory)}` },
           { role: "user", content: "Based on this information, generate a unique response." }
         ],
         max_tokens: 150,
@@ -200,45 +210,33 @@ function App() {
       const currentTime = Date.now();
       const timeSinceLastResponse = currentTime - lastResponseTime;
 
-      let shouldRespond = false;
-      console.log('Response frequency:', settings.chat.responseFrequency);
-      console.log('Time since last response:', timeSinceLastResponse);
-      console.log('Should respond:', shouldRespond);
-      switch (settings.chat.responseFrequency) {
-        case 'high':
-          shouldRespond = timeSinceLastResponse > 10000; // Respond every 10 seconds
-          break;
-        case 'medium':
-          shouldRespond = timeSinceLastResponse > 30000; // Respond every 30 seconds
-          break;
-        case 'low':
-          shouldRespond = timeSinceLastResponse > 60000; // Respond every 60 seconds
-          break;
-        default:
-          shouldRespond = timeSinceLastResponse > 30000; // Default to medium
-      }
+      // Get random delay between min and max
+      const minDelay = (settings.chat.minDelay || 0) * 1000; // Convert to milliseconds
+      const maxDelay = (settings.chat.maxDelay || 0) * 1000;
+      const randomDelay = minDelay + Math.random() * (maxDelay - minDelay);
 
-      if (shouldRespond) {
-        const aiResponse = await generateOpenAIResponse(updatedTranscript, recentChat);
-        console.log('AI response:', aiResponse);
-        if (aiResponse) {
-          sendChatMessage(aiResponse, userId);
-          setRespondedTranscript(prev => {
-            const newTranscript = `${prev} ${updatedTranscript}`.trim();
-            return newTranscript.length > MAX_RESPONDED_TRANSCRIPT_LENGTH
-              ? newTranscript.slice(-MAX_RESPONDED_TRANSCRIPT_LENGTH)
-              : newTranscript;
-          });
-          setCurrentTranscript('');
-          lastResponseTime = currentTime;
-        }
+      // Wait for the random delay
+      await new Promise(resolve => setTimeout(resolve, randomDelay));
+
+      const aiResponse = await generateOpenAIResponse(updatedTranscript, recentChat);
+      console.log('AI response:', aiResponse);
+      if (aiResponse) {
+        sendChatMessage(aiResponse, userId);
+        setRespondedTranscript(prev => {
+          const newTranscript = `${prev} ${updatedTranscript}`.trim();
+          return newTranscript.length > MAX_RESPONDED_TRANSCRIPT_LENGTH
+            ? newTranscript.slice(-MAX_RESPONDED_TRANSCRIPT_LENGTH)
+            : newTranscript;
+        });
+        setCurrentTranscript('');
+        lastResponseTime = currentTime;
       }
     });
 
     return () => {
       emitter.removeAllListeners('transcriptUpdated');
     };
-  }, [twitchMessages, respondedTranscript, settings.chat.responseFrequency]);
+  }, [twitchMessages, respondedTranscript, settings.chat.minDelay, settings.chat.maxDelay]);
 
   function startWebSocketClient(userId) {
     let websocketClient = new WebSocket(EVENTSUB_WEBSOCKET_URL);
@@ -385,7 +383,7 @@ function App() {
           message: chatMessage
         })
       });
-
+      console.log('Twitch response:', response);
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(`Failed to send chat message: ${JSON.stringify(errorData)}`);
@@ -394,6 +392,13 @@ function App() {
       console.error('Error sending chat message:', error);
     }
   }
+
+  const handleSaveSettings = useCallback((newSettings) => {
+    setSettings(newSettings);
+    saveSettings(newSettings);
+  }, []);
+
+  const settingsProp = useMemo(() => settings, [settings]);
 
   return (
     <div className="App">
@@ -404,12 +409,8 @@ function App() {
       
       {showSettings ? (
         <Settings 
-          settings={settings} 
-          onSaveSettings={(newSettings) => {
-            setSettings(newSettings);
-            // Here you could also save to localStorage or your backend
-            localStorage.setItem('botSettings', JSON.stringify(newSettings));
-          }} 
+          settings={settingsProp} 
+          onSaveSettings={handleSaveSettings} 
         />
       ) : (
         <>

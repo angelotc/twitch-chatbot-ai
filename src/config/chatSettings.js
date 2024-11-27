@@ -1,12 +1,15 @@
 export const defaultSettings = {
   bot: {
-    persona: 'memer',
+    persona: 'friendly',
     customPrompt: '',
+    attitude: 50,
   },
   chat: {
-    responseFrequency: 'medium',
-    emoteUsage: 'high'
-  }
+    responseSpeed: 'normal',
+    minDelay: 2,
+    maxDelay: 5,
+    emoteUsage: 'medium',
+  },
 };
 
 export const responseFrequencyOptions = [

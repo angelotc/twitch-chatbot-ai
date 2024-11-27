@@ -1,7 +1,7 @@
 import React from 'react';
 import './Navbar.css';
 
-function Navbar({ showDashboard, setShowDashboard }) {
+function Navbar({ showSettings, setShowSettings }) {
   return (
     <nav className="navbar">
       <div className="navbar-brand">
@@ -10,14 +10,14 @@ function Navbar({ showDashboard, setShowDashboard }) {
       
       <div className="navbar-links">
         <button 
-          className={`nav-link ${!showDashboard ? 'active' : ''}`}
-          onClick={() => setShowDashboard(false)}
+          className={`nav-link ${!showSettings ? 'active' : ''}`}
+          onClick={() => setShowSettings(false)}
         >
           Stream
         </button>
         <button 
-          className={`nav-link ${showDashboard ? 'active' : ''}`}
-          onClick={() => setShowDashboard(true)}
+          className={`nav-link ${showSettings ? 'active' : ''}`}
+          onClick={() => setShowSettings(true)}
         >
           Settings
         </button>
