@@ -1,0 +1,18 @@
+.page {
+  padding: 2rem 0;
+}
+
+.page header {
+  text-align: center;
+  margin-bottom: 3rem;
+}
+
+.settings-page {
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.stream-page {
+  max-width: 1200px;
+  margin: 0 auto;
+} 

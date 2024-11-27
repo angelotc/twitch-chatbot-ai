@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import './Dashboard.css';
+import './Settings.css';
 import { personas } from '../config/personas';
 
-function Dashboard({ settings, onSaveSettings }) {
+function Settings({ settings, onSaveSettings }) {
   const [currentSettings, setCurrentSettings] = useState(settings);
   const [customPromptError, setCustomPromptError] = useState('');
   
@@ -25,8 +25,8 @@ function Dashboard({ settings, onSaveSettings }) {
   };
 
   return (
-    <div className="dashboard">
-      <div className="dashboard-section">
+    <div className="settings">
+      <div className="settings-section">
         <h2>Bot Personality</h2>
         <div className="persona-selector">
           {Object.entries(personas).map(([key, persona]) => (
@@ -41,7 +41,6 @@ function Dashboard({ settings, onSaveSettings }) {
           ))}
         </div>
 
-        {/* Custom Prompt Input */}
         {currentSettings.bot?.persona === 'custom' && (
           <div className="custom-prompt-section">
             <label>Custom Prompt</label>
@@ -64,7 +63,7 @@ function Dashboard({ settings, onSaveSettings }) {
         )}
       </div>
 
-      <div className="dashboard-section">
+      <div className="settings-section">
         <h2>Chat Settings</h2>
         <div className="settings-grid">
           <div className="setting-item">
@@ -103,4 +102,4 @@ function Dashboard({ settings, onSaveSettings }) {
   );
 }
 
-export default Dashboard; 
+export default Settings; 

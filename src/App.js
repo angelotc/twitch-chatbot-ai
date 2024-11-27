@@ -4,16 +4,15 @@ import { RealtimeTranscriber } from 'assemblyai/streaming';
 import * as RecordRTC from 'recordrtc';
 import { EventEmitter } from 'events';
 import OpenAI from 'openai';
-import Dashboard from './components/Dashboard';
 import { personas } from './config/personas';
 import Navbar from './components/Navbar';
-import { loadSettings, saveSettings, defaultSettings } from './config/chatSettings';
+import { loadSettings } from './config/chatSettings';
+import Settings from './components/Settings'; // Import Settings component
 
 // Twitch Configuration - Move these to environment variables later
 const EVENTSUB_WEBSOCKET_URL = 'wss://eventsub.wss.twitch.tv/ws';
 const OAUTH_TOKEN = process.env.REACT_APP_TWITCH_ACCESS_TOKEN;
 const CLIENT_ID = process.env.REACT_APP_TWITCH_CLIENT_ID;
-const BOT_USER_ID = process.env.REACT_APP_TWITCH_BOT_USER_ID;
 const CHAT_CHANNEL_USER_ID = process.env.REACT_APP_TWITCH_CHANNEL_USER_ID;
 
 const openai = new OpenAI({
@@ -38,8 +37,9 @@ function App() {
   const MAX_RESPONDED_TRANSCRIPT_LENGTH = 750; // Set a maximum length for respondedTranscript
   const MAX_TWITCH_MESSAGES = 15; // Set a maximum number of Twitch chat messages to keep
 
-  const [showDashboard, setShowDashboard] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState(() => loadSettings());
+  const [userId, setUserId] = useState(null);
 
   const generateOpenAIResponse = async (updatedTranscript, chatHistory) => {
     const persona = personas[settings.bot.persona];
@@ -63,6 +63,7 @@ function App() {
       console.log('Updated transcript:', updatedTranscript);
       console.log('chatHistory:', chatHistory);
       console.log('OpenAI response:', response);
+      console.log('prompt:', settings.bot.customPrompt || persona.systemPrompt);
 
       return response.choices[0].message.content.trim();
     } catch (error) {
@@ -87,8 +88,12 @@ function App() {
       process.exit(1);
     }
   
+    const data = await response.json();
     console.log("Validated token.");
+    console.log('Bot user RESPONSE:', data);
+    return data.user_id;
   }
+
   const getToken = async () => {
     const response = await fetch('http://localhost:8000/token');
     const data = await response.json();
@@ -103,8 +108,11 @@ function App() {
   const startTranscription = async () => {
     setIsConnecting(true);
     try {
-      getAuth();
-      twitchWsRef.current = startWebSocketClient();
+      const authUserId = await getAuth();
+      setUserId(authUserId);
+      localStorage.setItem('twitchBotUserId', authUserId);
+      console.log('Bot user ID:', authUserId);
+      twitchWsRef.current = startWebSocketClient(authUserId);
       realtimeTranscriber.current = new RealtimeTranscriber({
         token: await getToken(),
         sampleRate: 16_000,
@@ -214,7 +222,7 @@ function App() {
         const aiResponse = await generateOpenAIResponse(updatedTranscript, recentChat);
         console.log('AI response:', aiResponse);
         if (aiResponse) {
-          sendChatMessage(aiResponse);
+          sendChatMessage(aiResponse, userId);
           setRespondedTranscript(prev => {
             const newTranscript = `${prev} ${updatedTranscript}`.trim();
             return newTranscript.length > MAX_RESPONDED_TRANSCRIPT_LENGTH
@@ -232,7 +240,7 @@ function App() {
     };
   }, [twitchMessages, respondedTranscript, settings.chat.responseFrequency]);
 
-  function startWebSocketClient() {
+  function startWebSocketClient(userId) {
     let websocketClient = new WebSocket(EVENTSUB_WEBSOCKET_URL);
 
     websocketClient.onopen = () => {
@@ -243,15 +251,52 @@ function App() {
 
     websocketClient.onmessage = (event) => {
       console.log("Received message:", event.data);
-      handleWebSocketMessage(JSON.parse(event.data));
+      handleWebSocketMessage(JSON.parse(event.data), userId);
     };
 
     return websocketClient;
   }
-  async function registerEventSubListeners() {
+  async function registerEventSubListeners(userId) {
+    
     console.log("Registering EventSub listeners with session ID:", websocketSessionID);
     try {
-      const response = await fetch('https://api.twitch.tv/helix/eventsub/subscriptions', {
+      // List all subscriptions
+      const listResponse = await fetch('https://api.twitch.tv/helix/eventsub/subscriptions', {
+        method: 'GET',
+        headers: {
+          'Authorization': 'Bearer ' + OAUTH_TOKEN,
+          'Client-Id': CLIENT_ID
+        }
+      });
+
+      if (!listResponse.ok) {
+        throw new Error('Failed to list EventSub subscriptions');
+      }
+
+      const subscriptions = await listResponse.json();
+
+      // Delete all existing subscriptions
+      for (const subscription of subscriptions.data) {
+        const deleteResponse = await fetch(`https://api.twitch.tv/helix/eventsub/subscriptions?id=${subscription.id}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': 'Bearer ' + OAUTH_TOKEN,
+            'Client-Id': CLIENT_ID
+          }
+        });
+
+        if (!deleteResponse.ok) {
+          console.error(`Failed to delete subscription ${subscription.id}`);
+        }
+      }
+      
+      // Create a new subscription
+      console.log('Creating new EventSub subscription');
+      console.log('Bot user ID:', userId);
+      console.log('Chat channel user ID:', CHAT_CHANNEL_USER_ID);
+      console.log('Websocket session ID:', websocketSessionID);
+
+      const createResponse = await fetch('https://api.twitch.tv/helix/eventsub/subscriptions', {
         method: 'POST',
         headers: {
           'Authorization': 'Bearer ' + OAUTH_TOKEN,
@@ -263,7 +308,7 @@ function App() {
           version: '1',
           condition: {
             broadcaster_user_id: CHAT_CHANNEL_USER_ID,
-            user_id: BOT_USER_ID
+            user_id: userId
           },
           transport: {
             method: 'websocket',
@@ -272,22 +317,22 @@ function App() {
         })
       });
 
-      if (!response.ok) {
-        const data = await response.json();
-        console.error("Failed to register EventSub listener:", data);
+      if (!createResponse.ok) {
+        const data = await createResponse.json();
+        console.error("Failed to create new EventSub subscription:", data);
       } else {
-        console.log("Successfully registered EventSub listener");
+        console.log("Successfully created new EventSub subscription");
       }
     } catch (error) {
-      console.error("Error registering EventSub listener:", error);
+      console.error("Error managing EventSub subscriptions:", error);
     }
   }
-  function handleWebSocketMessage(data) {
+  function handleWebSocketMessage(data, userId) {
     switch (data.metadata?.message_type) {
       case 'session_welcome':
         websocketSessionID = data.payload.session.id;
-        console.log("Websocket session IDssss:", websocketSessionID);
-        registerEventSubListeners();
+        console.log("Websocket session ID:", websocketSessionID);
+        registerEventSubListeners(userId);
         break;
       case 'notification':
         if (data.metadata.subscription_type === 'channel.chat.message') {
@@ -311,8 +356,22 @@ function App() {
     }
   }
 
-  async function sendChatMessage(chatMessage) {
+  async function sendChatMessage(chatMessage, userId) {
     try {
+      // Add validation check
+      if (!userId) {
+        console.error('Cannot send message: No user ID available');
+        // Try to recover the ID from localStorage
+        const storedId = localStorage.getItem('twitchBotUserId');
+        if (!storedId) {
+          throw new Error('No user ID found in localStorage');
+        }
+        userId = storedId;
+      }
+
+      console.log('Sending chat message:', chatMessage);
+      console.log('Bot user ID:', userId);
+
       let response = await fetch('https://api.twitch.tv/helix/chat/messages', {
         method: 'POST',
         headers: {
@@ -322,13 +381,14 @@ function App() {
         },
         body: JSON.stringify({
           broadcaster_id: CHAT_CHANNEL_USER_ID,
-          sender_id: BOT_USER_ID,
+          sender_id: userId,
           message: chatMessage
         })
       });
 
       if (!response.ok) {
-        console.error('Failed to send chat message');
+        const errorData = await response.json();
+        throw new Error(`Failed to send chat message: ${JSON.stringify(errorData)}`);
       }
     } catch (error) {
       console.error('Error sending chat message:', error);
@@ -338,12 +398,12 @@ function App() {
   return (
     <div className="App">
       <Navbar 
-        showDashboard={showDashboard} 
-        setShowDashboard={setShowDashboard} 
+        showSettings={showSettings} 
+        setShowSettings={setShowSettings} 
       />
       
-      {showDashboard ? (
-        <Dashboard 
+      {showSettings ? (
+        <Settings 
           settings={settings} 
           onSaveSettings={(newSettings) => {
             setSettings(newSettings);

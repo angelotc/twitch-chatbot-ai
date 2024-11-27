@@ -5,7 +5,7 @@ function Navbar({ showDashboard, setShowDashboard }) {
   return (
     <nav className="navbar">
       <div className="navbar-brand">
-        <h1>LoyalViewerAI</h1>
+        <h1></h1>
       </div>
       
       <div className="navbar-links">
